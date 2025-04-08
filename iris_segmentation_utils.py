@@ -52,7 +52,7 @@ def pupil_binarization(grayscale_image, X_P):
 
 
 def plot_images_experiments(original_images, processed_images, n=3):
-    fig, axes = plt.subplots(n, 2, figsize=(6, 2 * n))
+    fig, axes = plt.subplots(n, 2, figsize=(6, 4))
     
     for i in range(n):
         axes[i, 0].imshow(original_images.iloc[i], cmap='gray')
