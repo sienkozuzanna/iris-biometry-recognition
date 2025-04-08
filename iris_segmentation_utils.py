@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.ndimage import rotate
+
 
 #converting to grayscale
 def convert_to_grayscale(image):
@@ -11,6 +13,7 @@ def convert_to_grayscale(image):
         return cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
     else:
         return image_np
+    
 
 def compute_binarization_threshold(grayscale_image):
     if grayscale_image is None:
@@ -50,9 +53,73 @@ def pupil_binarization(grayscale_image, X_P):
     _, binary_pupil = cv2.threshold(grayscale_image, P_P, 255, cv2.THRESH_BINARY)
     return binary_pupil
 
+# morphology - open and close
+def clean_pupil(grayscale_image, bin_X_P, open_kernel_size, close_kernel_size):
+    bin_image = pupil_binarization(grayscale_image, bin_X_P)
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_kernel_size, open_kernel_size))  
+    opened = cv2.morphologyEx(bin_image, cv2.MORPH_OPEN, kernel_open)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size, close_kernel_size))  
+    final_pupil = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close)
+    return final_pupil
 
-def plot_images_experiments(original_images, processed_images, n=3):
-    fig, axes = plt.subplots(n, 2, figsize=(6, 4))
+# calculate pupil center an radius with projections
+def pupil_center_radius(final_pupil):
+    final_pupil = np.array(final_pupil)
+    vertical_projection = np.sum(final_pupil ==0, axis=0)
+    horizontal_projection = np.sum(final_pupil==0, axis=1)
+    center_x = np.argmax(vertical_projection)
+    center_y = np.argmax(horizontal_projection)
+
+    pupil_mask =(final_pupil==0).astype(np.uint8)
+    #radius
+    y_ind, x_ind = np.where(pupil_mask==1) #najbardziej odległe punkty
+    if len(x_ind) >0 and len(y_ind)>0:
+        distances = np.sqrt((x_ind - center_x)**2 + (y_ind - center_y)**2) #odległość kazdego piksela od środka
+        radius = np.percentile(distances, 85)
+    else:
+        radius =0
+    
+    return (center_x, center_y), radius
+
+
+
+#calculate pupil center and radius with moments
+def pupil_center_radius_moments(final_pupil):
+    final_pupil = np.array(final_pupil)
+    pupil_mask = (final_pupil ==0).astype(np.uint8) #same źrenice
+    moments = cv2.moments(pupil_mask)
+    if moments['m00'] != 0:
+        center_x = int(moments['m10']/moments['m00'])
+        center_y = int(moments['m01']/ moments['m00'])
+    else: 
+        (center_x,center_y),_ = pupil_center_radius(final_pupil)
+
+    #radius
+    y_ind, x_ind = np.where(pupil_mask==1) #najbardziej odległe punkty
+    if len(x_ind) >0 and len(y_ind)>0:
+        distances = np.sqrt((x_ind - center_x)**2 + (y_ind - center_y)**2) #odległość kazdego piksela od środka
+        radius = np.max(distances)
+    else:
+        radius =0
+
+    return (center_x,center_y), radius
+
+# draw pupil center and circle
+def draw_pupil_circle(final_pupil, center, radius):
+    if len(final_pupil.shape) == 2:
+        final_pupil = cv2.cvtColor(final_pupil, cv2.COLOR_GRAY2BGR)
+    
+    cv2.circle(final_pupil, center, radius, (0, 255, 0), 2)  
+    cv2.drawMarker(final_pupil, center, (0, 0, 255), 
+                   markerType=cv2.MARKER_CROSS, 
+                   markerSize=10,
+                   thickness=2)  
+    return final_pupil
+
+
+
+def plot_images_experiments(original_images, processed_images, n=3, figsize = (6,4)):
+    fig, axes = plt.subplots(n, 2, figsize=figsize)
     
     for i in range(n):
         axes[i, 0].imshow(original_images.iloc[i], cmap='gray')
@@ -66,4 +133,3 @@ def plot_images_experiments(original_images, processed_images, n=3):
     plt.subplots_adjust(hspace=0.3)
     plt.tight_layout()
     plt.show()
-
