@@ -26,6 +26,53 @@ def compute_binarization_threshold(grayscale_image):
     P = total_sum / (h * w) #mean brightness
     return P
 
+
+def calculate_iris_threshold_mean_brightness(grayscale_image):
+    if grayscale_image is None:
+        raise ValueError("Image not found or unable to load.")
+    if len(grayscale_image.shape) != 2:
+        raise ValueError("Image must be a grayscale image.")
+    
+    mean_brightness = np.mean(grayscale_image)
+    normalized_brightness = mean_brightness / 255.0
+    print(f'normalized_brightness: {normalized_brightness:.3f}')
+    
+    # im jaśniejszy obraz, tym mniejsze X_I
+    X_I = 1.9 - 0.5 * normalized_brightness
+    
+    return np.clip(X_I, 1.4, 1.9)
+
+def get_center_roi(image, scale=0.5):
+    h, w = image.shape
+    dh = int(h * scale / 2)
+    dw = int(w * scale / 2)
+    center_h = h // 2
+    center_w = w // 2
+    return image[center_h - dh:center_h + dh, center_w - dw:center_w + dw]
+
+
+def calculate_iris_threshold(grayscale_image):
+    h, w = grayscale_image.shape
+    roi = get_center_roi(grayscale_image, scale=0.4)
+    
+    mask = roi > 40  # ignoring black pixels (pupil and eyelashes)
+    filtered_pixels = roi[mask]
+    
+    if filtered_pixels.size == 0:
+        mean_brightness = np.mean(roi)
+    else:
+        mean_brightness = np.mean(filtered_pixels)
+        
+    normalized = mean_brightness / 255.0
+    print(normalized)
+    if normalized < 0.4:  # darker iris
+        X_I = 1.8
+    elif normalized > 0.5:  # lighter iris
+        X_I = 1.6
+    else:
+        X_I = 1.8 - (normalized - 0.4) * 2.0 #interpolation
+    return np.clip(X_I, 1.4, 1.9)
+
 #X_I from experiments 
 def iris_binarization(grayscale_image, X_I):
     if grayscale_image is None:
@@ -81,8 +128,6 @@ def pupil_center_radius(final_pupil):
     
     return (center_x, center_y), radius
 
-
-
 #calculate pupil center and radius with moments
 def pupil_center_radius_moments(final_pupil):
     final_pupil = np.array(final_pupil)
@@ -116,6 +161,47 @@ def draw_pupil_circle(final_pupil, center, radius):
                    thickness=2)  
     return final_pupil
 
+def clean_iris_region(iris_binary, pupil_center, pupil_radius):
+    #removing eyelashes (vertical and horizontal sturctures rather this)
+    kernel_vertical = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
+    temp = cv2.morphologyEx(iris_binary, cv2.MORPH_OPEN, kernel_vertical)
+    kernel_horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+    temp = cv2.morphologyEx(temp, cv2.MORPH_OPEN, kernel_horizontal)
+
+    #fixing holes
+    kernel_round = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)) #small white dots
+    iris_clean = cv2.morphologyEx(temp, cv2.MORPH_OPEN, kernel_round) #small black holes
+    iris_clean = cv2.morphologyEx(iris_clean, cv2.MORPH_CLOSE, kernel_round)
+
+    #masking areas too far or too close to iris (eyeleads)
+    mask = np.zeros_like(iris_clean)
+    cv2.circle(mask, pupil_center, int(pupil_radius * 4), 255, -1)
+    cv2.circle(mask, pupil_center, int(pupil_radius * 1.2), 0, -1)
+    iris_clean = cv2.bitwise_and(iris_clean, mask)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(iris_clean)
+    if num_labels > 1:
+        largest_label = np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1
+        iris_clean = (labels == largest_label).astype(np.uint8) * 255
+    
+    return iris_clean
+
+
+def iris_segmentation_pipeline(grayscale_image, pupil_X_P=2.5, iris_X_I=None):
+    pupil_binary = clean_pupil(grayscale_image, pupil_X_P, 5, 7)
+    pupil_center, pupil_radius = pupil_center_radius_moments(pupil_binary)
+    if iris_X_I is None:
+        iris_X_I = calculate_iris_threshold(grayscale_image)
+    iris_binary = iris_binarization(grayscale_image, iris_X_I)
+    iris_clean = clean_iris_region(iris_binary, pupil_center, pupil_radius)
+    #iris_center, iris_radius = detect_iris_boundary(iris_clean, pupil_center, pupil_radius)
+
+    return {
+        'pupil_center': pupil_center,
+        'pupil_radius': pupil_radius,
+        'pupil_binary': pupil_binary,
+        'iris_binary': iris_clean
+    }
 
 
 def plot_images_experiments(original_images, processed_images, n=3, figsize = (6,4)):
