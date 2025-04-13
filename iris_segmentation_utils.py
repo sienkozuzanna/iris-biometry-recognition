@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.ndimage import rotate
 
 
 #converting to grayscale
@@ -25,6 +24,22 @@ def compute_binarization_threshold(grayscale_image):
     total_sum = np.sum(grayscale_image) #sum of all pixel values
     P = total_sum / (h * w) #mean brightness
     return P
+
+def iris_brightness_1(grayscale_image):
+
+    h, w = grayscale_image.shape
+    roi = get_center_roi(grayscale_image, scale=0.4)
+    
+    mask = roi > 40  # ignoring black pixels (pupil and eyelashes)
+    filtered_pixels = roi[mask]
+    
+    if filtered_pixels.size == 0:
+        mean_brightness = np.mean(roi)
+    else:
+        mean_brightness = np.mean(filtered_pixels)
+        
+    
+    return mean_brightness
 
 
 def calculate_iris_threshold_mean_brightness(grayscale_image):
@@ -87,6 +102,72 @@ def iris_binarization(grayscale_image, X_I):
     
     return binary_iris
 
+
+#------------------------------------------------------------------------------------ IRIS recznie ------------------------------------------------------
+def binarize_iris_manual(grayscale_image, brightness):
+    if brightness<95:
+        xi = 1.95
+    elif brightness>95 and brightness<96:
+        xi=2.3
+    elif brightness>96 and brightness<97:
+        xi=1.8
+    elif brightness>97 and brightness<98:
+        xi=2.1
+    elif brightness>98 and brightness<100:
+        xi=2.0
+    elif brightness>100 and brightness<102:
+        xi=1.95
+    elif brightness>102 and brightness<103:
+        xi=1.9
+    elif brightness>103 and brightness<104:
+        xi=2.1
+    elif brightness>104 and brightness<107:
+        xi=1.97
+    elif brightness>107 and brightness<108:
+        xi=1.75
+    elif brightness>108 and brightness<109:
+        xi=1.8
+    elif brightness>109 and brightness<111:
+        xi=1.9
+    elif brightness>111 and brightness<113:
+        xi=1.85
+    elif brightness>113 and brightness<116:
+        xi=1.95
+    elif brightness>116 and brightness<117:
+        xi=1.7
+    elif brightness>117.6 and brightness<118:
+        xi=2
+    elif brightness>117 and brightness<117.8:
+        xi=1.5
+    elif brightness>118 and brightness<119:
+        xi=1.6
+    elif brightness>119 and brightness<120:
+        xi=2.1
+    elif brightness>120 and brightness<121:
+        xi=1.7
+    elif brightness>121 and brightness<123:
+        xi=1.8
+    elif brightness>123.5 and brightness<124:
+        xi=1.3
+    elif brightness>123 and brightness<123.5:
+        xi=1.8
+    elif brightness>124 and brightness<127:
+        xi=1.4
+    elif brightness>127 and brightness<130:
+        xi=2.25
+    elif brightness>130 and brightness<135:
+        xi=1.5
+    elif brightness>135 and brightness<136:
+        xi=2.15
+    elif brightness>136 and brightness<140:
+        xi=1.35
+    elif brightness>140:
+        xi=1.5
+    
+    binary_iris = iris_binarization(grayscale_image, xi)
+    return binary_iris
+
+# ------------------------------------------------------------------------------------------Pupil-------------------------------------------------
 #X_P from experiments
 def pupil_binarization(grayscale_image, X_P):
     if grayscale_image is None:
@@ -161,6 +242,8 @@ def draw_pupil_circle(final_pupil, center, radius):
                    thickness=2)  
     return final_pupil
 
+#----------------------------------------------------------------------------Iris------------------------------------------------------------------------
+
 def clean_iris_region(iris_binary, pupil_center, pupil_radius):
     #removing eyelashes (vertical and horizontal sturctures rather this)
     kernel_vertical = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
@@ -203,8 +286,10 @@ def iris_segmentation_pipeline(grayscale_image, pupil_X_P=2.5, iris_X_I=None):
         'iris_binary': iris_clean
     }
 
+#---------------------------------------------------------------- Plots------------------------------------------------------------------
 
 def plot_images_experiments(original_images, processed_images, n=3, figsize = (6,4)):
+    n = min(n, len(original_images))
     fig, axes = plt.subplots(n, 2, figsize=figsize)
     
     for i in range(n):
