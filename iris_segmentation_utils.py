@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-
+from skimage.morphology import remove_small_objects
 
 #converting to grayscale
 def convert_to_grayscale(image):
@@ -38,7 +38,6 @@ def iris_brightness_1(grayscale_image):
     else:
         mean_brightness = np.mean(filtered_pixels)
         
-    
     return mean_brightness
 
 
@@ -89,11 +88,16 @@ def calculate_iris_threshold(grayscale_image):
     return np.clip(X_I, 1.4, 1.9)
 
 #X_I from experiments 
-def iris_binarization(grayscale_image, X_I):
+def iris_binarization(grayscale_image, X_I, sharpen=True):
     if grayscale_image is None:
         raise ValueError("Image not found or unable to load.")
     if len(grayscale_image.shape) != 2:
         raise ValueError("Image must be a grayscale image.")
+    
+    sharpened = cv2.Laplacian(grayscale_image, cv2.CV_64F)
+    sharpened = cv2.convertScaleAbs(sharpened)
+    enhanced = cv2.addWeighted(grayscale_image, 1.0, sharpened, 1.0, 0)
+    grayscale_image=enhanced
     
     P = compute_binarization_threshold(grayscale_image)
     #binarization threshold for iris
@@ -104,7 +108,9 @@ def iris_binarization(grayscale_image, X_I):
 
 
 #------------------------------------------------------------------------------------ IRIS recznie ------------------------------------------------------
-def binarize_iris_manual(grayscale_image, brightness):
+def binarize_iris_manual(grayscale_image, brightness=None):
+    if brightness is None:
+        brightness=iris_brightness_1(grayscale_image)
     if brightness<95:
         xi = 1.95
     elif brightness>95 and brightness<96:
@@ -244,33 +250,75 @@ def draw_pupil_circle(final_pupil, center, radius):
 
 #----------------------------------------------------------------------------Iris------------------------------------------------------------------------
 
-def clean_iris_region(iris_binary, pupil_center, pupil_radius):
-    #removing eyelashes (vertical and horizontal sturctures rather this)
-    kernel_vertical = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
-    temp = cv2.morphologyEx(iris_binary, cv2.MORPH_OPEN, kernel_vertical)
-    kernel_horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
-    temp = cv2.morphologyEx(temp, cv2.MORPH_OPEN, kernel_horizontal)
-
-    #fixing holes
-    kernel_round = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)) #small white dots
-    iris_clean = cv2.morphologyEx(temp, cv2.MORPH_OPEN, kernel_round) #small black holes
-    iris_clean = cv2.morphologyEx(iris_clean, cv2.MORPH_CLOSE, kernel_round)
-
-    #masking areas too far or too close to iris (eyeleads)
-    mask = np.zeros_like(iris_clean)
-    cv2.circle(mask, pupil_center, int(pupil_radius * 4), 255, -1)
-    cv2.circle(mask, pupil_center, int(pupil_radius * 1.2), 0, -1)
-    iris_clean = cv2.bitwise_and(iris_clean, mask)
-
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(iris_clean)
-    if num_labels > 1:
-        largest_label = np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1
-        iris_clean = (labels == largest_label).astype(np.uint8) * 255
+def clean_iris(grayscale_image, open_kernel_size1, close_kernel_size1, open_kernel_size2, close_kernel_size2,
+                extra_cleaning=True, min_area=500,  horizontal_kernel_width=15):
+    brightness = iris_brightness_1(grayscale_image)
+    bin_image = binarize_iris_manual(grayscale_image, brightness)
     
-    return iris_clean
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_kernel_size1, open_kernel_size1))  
+    opened = cv2.morphologyEx(bin_image, cv2.MORPH_OPEN, kernel_open)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size1, close_kernel_size1))  
+    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close)
 
 
-def iris_segmentation_pipeline(grayscale_image, pupil_X_P=2.5, iris_X_I=None):
+    if extra_cleaning:
+        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4,4))
+        eroded = cv2.erode(closed, erode_kernel, iterations=1)
+
+        dilated = cv2.dilate(eroded, erode_kernel, iterations=1)
+        blackhat = cv2.morphologyEx(closed, cv2.MORPH_BLACKHAT, erode_kernel)
+
+        cleaned = cv2.bitwise_and(dilated, cv2.bitwise_not(blackhat))
+        return cleaned
+    kernel_erode_horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (horizontal_kernel_width, 1)) 
+    eroded_horizontally = cv2.erode(cleaned, kernel_erode_horizontal, iterations=1)
+
+    cleaned_bool = eroded_horizontally.astype(bool) 
+    cleaned_filtered = remove_small_objects(cleaned_bool, min_size=min_area)
+    cleaned_final = (cleaned_filtered * 255).astype(np.uint8)
+
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_kernel_size2, open_kernel_size2))  
+    opened = cv2.morphologyEx(cleaned_final, cv2.MORPH_OPEN, kernel_open)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size2, close_kernel_size2))  
+    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close)
+
+    return closed
+
+def remove_eyelids_and_eyelashes(grayscale_image):
+    brightness = iris_brightness_1(grayscale_image)
+    bin_image = binarize_iris_manual(grayscale_image, brightness)
+    
+    cleaned_bool = bin_image.astype(bool)
+    cleaned_filtered = remove_small_objects(cleaned_bool, min_size=500)
+    cleaned_final = (cleaned_filtered * 255).astype(np.uint8)
+
+    kernel_eyelash = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
+    no_eyelashes = cv2.morphologyEx(cleaned_final, cv2.MORPH_OPEN, kernel_eyelash)
+
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 2))
+    no_eyelids = cv2.morphologyEx(no_eyelashes, cv2.MORPH_OPEN, horizontal_kernel)
+
+    contours, _ = cv2.findContours(no_eyelids, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    height = grayscale_image.shape[0]
+
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        aspect_ratio = w / h if h != 0 else 0
+
+        if aspect_ratio > 4 and (y < height * 0.4 or y + h > height * 0.6):
+            cv2.drawContours(no_eyelashes, [cnt], -1, 255, -1)
+
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))
+    no_vertical_lines = cv2.morphologyEx(no_eyelashes, cv2.MORPH_CLOSE, vertical_kernel)
+
+    cleaned_bool = no_vertical_lines.astype(bool)
+    cleaned_filtered = remove_small_objects(cleaned_bool, min_size=100)
+    cleaned_final = (cleaned_filtered * 255).astype(np.uint8)
+
+    return cleaned_filtered
+
+
+def iris_segmentation_pipeline(grayscale_image, pupil_X_P=5.2, iris_X_I=None):
     pupil_binary = clean_pupil(grayscale_image, pupil_X_P, 5, 7)
     pupil_center, pupil_radius = pupil_center_radius_moments(pupil_binary)
     if iris_X_I is None:
@@ -285,6 +333,19 @@ def iris_segmentation_pipeline(grayscale_image, pupil_X_P=2.5, iris_X_I=None):
         'pupil_binary': pupil_binary,
         'iris_binary': iris_clean
     }
+
+def find_hough_circles(grayscale_image, dp=1.5, min_dist=30, param1=100, param2=30, min_radius=10, max_radius=80):
+    brightness = iris_brightness_1(grayscale_image)
+    bin_image = binarize_iris_manual(grayscale_image, brightness)
+
+    circles = cv2.HoughCircles(bin_image, cv2.HOUGH_GRADIENT, dp=dp, minDist=min_dist, param1=param1, param2=param2,
+        minRadius=min_radius,maxRadius=max_radius)
+
+    if circles is not None:
+        circles = np.uint16(np.around(circles[0]))
+        return circles 
+    else:
+        return []
 
 #---------------------------------------------------------------- Plots------------------------------------------------------------------
 
