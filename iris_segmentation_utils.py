@@ -365,6 +365,17 @@ def remove_small_objects_skimage(bin_image, min_size=500):
     cleaned = remove_small_objects(bin_image, min_size=min_size)
     return (cleaned * 255).astype(np.uint8)
 
+def extract_iris_region(image, pupil_center, pupil_radius, iris_radius):
+    mask = np.zeros_like(image, dtype=np.uint8)
+    cv2.circle(mask, tuple(map(int, pupil_center)), int(iris_radius), 255, thickness=-1)
+    cv2.circle(mask, tuple(map(int, pupil_center)), int(pupil_radius), 0, thickness=-1)
+    if len(image.shape) == 3:
+        result = cv2.bitwise_and(image, image, mask=mask)
+    else:
+        result = cv2.bitwise_and(image, mask)
+
+    return result
+
 
 def iris_pipeline(grayscale_image):
     brightness = iris_brightness_1(grayscale_image)
@@ -378,7 +389,15 @@ def iris_pipeline(grayscale_image):
     circles=find_hough_circles(canny_edges, pupil_center, pupil_radius)
     print("Detected circles:", circles)
     image_with_circles = draw_circles(grayscale_image.copy(), circles, pupil_center, pupil_radius)
-    return canny_edges, cleaned_image, image_with_circles, circles
+    if circles:
+        iris_radius = circles[0][2]
+        extracted_iris = extract_iris_region(grayscale_image, pupil_center, pupil_radius, iris_radius)
+        unwrapped_iris = unwrap_iris(extracted_iris, pupil_center, pupil_radius, iris_radius)
+    else:
+        extracted_iris = np.zeros_like(grayscale_image)
+        unwrapped_iris = np.zeros((64, 360), dtype=np.uint8)
+
+    return canny_edges, cleaned_image, image_with_circles, circles, extracted_iris, unwrapped_iris
 
 
 def find_hough_circles(bin_image, pupil_center, pupil_radius, dp=1.5, min_dist=30,
@@ -413,7 +432,6 @@ def find_hough_circles_all(bin_image, dp=1.5, min_dist=30,
     return detected_circles
 
 
-
 def draw_circles(image, circles, pupil_center=None, pupil_radius=None):
     if len(image.shape) == 2:
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
@@ -429,6 +447,26 @@ def draw_circles(image, circles, pupil_center=None, pupil_radius=None):
         cv2.circle(image, tuple(map(int, pupil_center)), int(pupil_radius), (255, 0, 0), 2)
 
     return image
+
+def unwrap_iris(image, pupil_center, pupil_radius, iris_radius):
+    rad_res, ang_res =64, 360 #number of radial sampling steps, number of angular sampling steps
+    unwrapped = np.zeros((rad_res, ang_res), dtype=np.uint8)
+    center_x, center_y = pupil_center
+
+    for i in range(rad_res):
+        r = pupil_radius + (iris_radius - pupil_radius) * (i / rad_res)
+        for j in range(ang_res):
+            theta = 2 * np.pi * (j / ang_res)
+            x = int(center_x + r * np.cos(theta))
+            y = int(center_y + r * np.sin(theta))
+
+            if 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+                unwrapped[i, j] = image[y, x]
+            else:
+                unwrapped[i, j] = 0  #outside iris
+
+    return unwrapped
+
 
 #---------------------------------------------------------------- Plots------------------------------------------------------------------
 
