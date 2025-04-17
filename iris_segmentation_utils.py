@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage.morphology import remove_small_objects
+from skimage.morphology import remove_small_objects
 
 #converting to grayscale
 def convert_to_grayscale(image):
@@ -78,7 +79,7 @@ def calculate_iris_threshold(grayscale_image):
         mean_brightness = np.mean(filtered_pixels)
         
     normalized = mean_brightness / 255.0
-    print(normalized)
+    #print(normalized)
     if normalized < 0.4:  # darker iris
         X_I = 1.8
     elif normalized > 0.5:  # lighter iris
@@ -248,9 +249,16 @@ def draw_pupil_circle(final_pupil, center, radius):
                    thickness=2)  
     return final_pupil
 
+def pupil_pipeline(grayscale_image, X_P=5.2, open_kernel_size=7, close_kernel_size=9):
+    clean_pupil_image = clean_pupil(grayscale_image, X_P, open_kernel_size, close_kernel_size)
+    center, radius = pupil_center_radius_moments(clean_pupil_image)
+    
+    return clean_pupil_image, center, radius
+
 #----------------------------------------------------------------------------Iris------------------------------------------------------------------------
 
-def clean_iris(grayscale_image, open_kernel_size1, close_kernel_size1, open_kernel_size2, close_kernel_size2,
+def clean_iris(grayscale_image, open_kernel_size1=5, close_kernel_size1=5, 
+               open_kernel_size2=5, close_kernel_size2=5,
                 extra_cleaning=True, min_area=500,  horizontal_kernel_width=15):
     brightness = iris_brightness_1(grayscale_image)
     bin_image = binarize_iris_manual(grayscale_image, brightness)
@@ -259,7 +267,6 @@ def clean_iris(grayscale_image, open_kernel_size1, close_kernel_size1, open_kern
     opened = cv2.morphologyEx(bin_image, cv2.MORPH_OPEN, kernel_open)
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size1, close_kernel_size1))  
     closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close)
-
 
     if extra_cleaning:
         erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4,4))
@@ -282,7 +289,14 @@ def clean_iris(grayscale_image, open_kernel_size1, close_kernel_size1, open_kern
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size2, close_kernel_size2))  
     closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close)
 
-    return closed
+    kernel_close_big = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
+    closed = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, kernel_close_big)
+
+    kernel_open_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
+    opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open_small)
+
+    return opened
+
 
 def remove_eyelids_and_eyelashes(grayscale_image):
     brightness = iris_brightness_1(grayscale_image)
@@ -292,12 +306,15 @@ def remove_eyelids_and_eyelashes(grayscale_image):
     cleaned_filtered = remove_small_objects(cleaned_bool, min_size=500)
     cleaned_final = (cleaned_filtered * 255).astype(np.uint8)
 
-    kernel_eyelash = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
+    kernel_eyelash = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 10))
     no_eyelashes = cv2.morphologyEx(cleaned_final, cv2.MORPH_OPEN, kernel_eyelash)
 
-    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 2))
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 5))
     no_eyelids = cv2.morphologyEx(no_eyelashes, cv2.MORPH_OPEN, horizontal_kernel)
 
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 40))
+    no_vertical_lines = cv2.morphologyEx(no_eyelids, cv2.MORPH_OPEN, vertical_kernel)
+    
     contours, _ = cv2.findContours(no_eyelids, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     height = grayscale_image.shape[0]
 
@@ -305,7 +322,7 @@ def remove_eyelids_and_eyelashes(grayscale_image):
         x, y, w, h = cv2.boundingRect(cnt)
         aspect_ratio = w / h if h != 0 else 0
 
-        if aspect_ratio > 4 and (y < height * 0.4 or y + h > height * 0.6):
+        if aspect_ratio > 4 and (y < height * 0.2 or y + h > height * 0.3):
             cv2.drawContours(no_eyelashes, [cnt], -1, 255, -1)
 
     vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))
@@ -315,37 +332,103 @@ def remove_eyelids_and_eyelashes(grayscale_image):
     cleaned_filtered = remove_small_objects(cleaned_bool, min_size=100)
     cleaned_final = (cleaned_filtered * 255).astype(np.uint8)
 
-    return cleaned_filtered
+    return cleaned_final
 
-
-def iris_segmentation_pipeline(grayscale_image, pupil_X_P=5.2, iris_X_I=None):
-    pupil_binary = clean_pupil(grayscale_image, pupil_X_P, 5, 7)
-    pupil_center, pupil_radius = pupil_center_radius_moments(pupil_binary)
-    if iris_X_I is None:
-        iris_X_I = calculate_iris_threshold(grayscale_image)
-    iris_binary = iris_binarization(grayscale_image, iris_X_I)
-    iris_clean = clean_iris_region(iris_binary, pupil_center, pupil_radius)
-    #iris_center, iris_radius = detect_iris_boundary(iris_clean, pupil_center, pupil_radius)
-
-    return {
-        'pupil_center': pupil_center,
-        'pupil_radius': pupil_radius,
-        'pupil_binary': pupil_binary,
-        'iris_binary': iris_clean
-    }
-
-def find_hough_circles(grayscale_image, dp=1.5, min_dist=30, param1=100, param2=30, min_radius=10, max_radius=80):
+def detect_canny_edges(grayscale_image, low_threshold=50, high_threshold=150):
     brightness = iris_brightness_1(grayscale_image)
     bin_image = binarize_iris_manual(grayscale_image, brightness)
+    edges=cv2.Canny(bin_image, low_threshold, high_threshold)
+    return edges
 
-    circles = cv2.HoughCircles(bin_image, cv2.HOUGH_GRADIENT, dp=dp, minDist=min_dist, param1=param1, param2=param2,
-        minRadius=min_radius,maxRadius=max_radius)
+def iris_morphology(bin_image, open_kernel_size=9, close_kernel_size=3, 
+                    remove_horizontal_lines=True, remove_vertical_lines=True):
+    
+    bin_image-remove_small_objects_skimage(bin_image, min_size=500)
+
+    if remove_horizontal_lines:
+        kernel_horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
+        bin_image = cv2.morphologyEx(bin_image, cv2.MORPH_OPEN, kernel_horizontal)
+    if remove_vertical_lines:
+        kernel_vertical = cv2.getStructuringElement(cv2.MORPH_RECT, (1,5))
+        bin_image = cv2.morphologyEx(bin_image, cv2.MORPH_OPEN, kernel_vertical)
+
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_kernel_size, open_kernel_size))  
+    opened = cv2.morphologyEx(bin_image, cv2.MORPH_OPEN, kernel_open)
+
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size, close_kernel_size))
+    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close)
+    final=remove_small_objects_skimage(closed, min_size=500)
+    return final
+
+def remove_small_objects_skimage(bin_image, min_size=500):
+    bin_image = (bin_image > 0)
+    cleaned = remove_small_objects(bin_image, min_size=min_size)
+    return (cleaned * 255).astype(np.uint8)
+
+
+def iris_pipeline(grayscale_image):
+    brightness = iris_brightness_1(grayscale_image)
+    bin_image = binarize_iris_manual(grayscale_image, brightness)
+    cleaned_image=iris_morphology(bin_image)
+    low_threshold, high_threshold=10,120
+    canny_edges=cv2.Canny(cleaned_image, low_threshold, high_threshold)
+
+    clean_pupil_image, pupil_center, pupil_radius = pupil_pipeline(grayscale_image)
+
+    circles=find_hough_circles(canny_edges, pupil_center, pupil_radius)
+    print("Detected circles:", circles)
+    image_with_circles = draw_circles(grayscale_image.copy(), circles, pupil_center, pupil_radius)
+    return canny_edges, cleaned_image, image_with_circles, circles
+
+
+def find_hough_circles(bin_image, pupil_center, pupil_radius, dp=1.5, min_dist=30,
+                        param1=100, param2=30, max_radius=80, max_distance=30):
+    min_radius=int(pupil_radius*1.35)
+    circles = cv2.HoughCircles(bin_image, cv2.HOUGH_GRADIENT, dp=dp, minDist=min_dist, param1=param1, 
+                               param2=param2, minRadius=min_radius, maxRadius=max_radius)
+    detected_circles = []
 
     if circles is not None:
         circles = np.uint16(np.around(circles[0]))
-        return circles 
-    else:
-        return []
+
+        for (x, y, r) in circles:
+            distance = np.sqrt((x - pupil_center[0])**2 + (y - pupil_center[1])**2)
+
+            if distance <= max_distance:
+                new_circle = (int(pupil_center[0]), int(pupil_center[1]), r)
+                detected_circles.append(new_circle)
+
+    return detected_circles
+
+def find_hough_circles_all(bin_image, dp=1.5, min_dist=30,
+                            param1=100, param2=30, min_radius=0, max_radius=80):
+    circles = cv2.HoughCircles(bin_image, cv2.HOUGH_GRADIENT, dp=dp, minDist=min_dist, param1=param1,
+        param2=param2,minRadius=min_radius,maxRadius=max_radius)
+
+    detected_circles = []
+    if circles is not None:
+        circles = np.uint16(np.around(circles[0]))
+        for (x, y, r) in circles:
+            detected_circles.append((x, y, r))
+    return detected_circles
+
+
+
+def draw_circles(image, circles, pupil_center=None, pupil_radius=None):
+    if len(image.shape) == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+    for (x, y, r) in circles:
+        cv2.circle(image, (x, y), r, (0, 255, 0), 2)
+        cv2.drawMarker(image, (x, y), (0, 0, 255),   
+                       markerType=cv2.MARKER_CROSS, 
+                       markerSize=10,
+                       thickness=2)
+        
+    if pupil_center is not None and pupil_radius is not None:
+        cv2.circle(image, tuple(map(int, pupil_center)), int(pupil_radius), (255, 0, 0), 2)
+
+    return image
 
 #---------------------------------------------------------------- Plots------------------------------------------------------------------
 
@@ -363,5 +446,29 @@ def plot_images_experiments(original_images, processed_images, n=3, figsize = (6
         axes[i, 1].set_title(f'Processed Image {i+1}')
 
     plt.subplots_adjust(hspace=0.3)
+    plt.tight_layout()
+    plt.show()
+
+def plot_iris_stages(original_images, cleaned_images, canny_edges, images_with_circles, n=3, figsize=(12, 6)):
+    n = min(n, len(original_images))
+    fig, axes = plt.subplots(n, 4, figsize=figsize)
+
+    for i in range(n):
+        axes[i, 0].imshow(original_images.iloc[i], cmap='gray')
+        axes[i, 0].axis('off')
+        axes[i, 0].set_title('Original')
+
+        axes[i, 1].imshow(cleaned_images.iloc[i], cmap='gray')
+        axes[i, 1].axis('off')
+        axes[i, 1].set_title('Cleaned')
+
+        axes[i, 2].imshow(canny_edges.iloc[i], cmap='gray')
+        axes[i, 2].axis('off')
+        axes[i, 2].set_title('Canny Edges')
+
+        axes[i, 3].imshow(images_with_circles.iloc[i])
+        axes[i, 3].axis('off')
+        axes[i, 3].set_title('Detected Circles')
+
     plt.tight_layout()
     plt.show()
